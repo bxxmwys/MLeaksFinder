@@ -30,13 +30,24 @@ Pod::Spec.new do |s|
 
   s.ios.deployment_target = '6.0'
 
-  s.source_files = 'MLeaksFinder/**/*'
+  s.source_files = 'MLeaksFinder/**/*.{h,m,mm,c}'
+  # 内嵌 FBRetainCycleDetector 有少量源码必须使用 MRR；这里显式列出 ARC 文件，未列入的 MRR 文件由 CocoaPods 加 -fno-objc-arc。
+  s.requires_arc = [
+    'MLeaksFinder/*.m',
+    'MLeaksFinder/FBRetainCycleDetector/Detector/*.{m,mm}',
+    'MLeaksFinder/FBRetainCycleDetector/Filtering/*.mm',
+    'MLeaksFinder/FBRetainCycleDetector/Graph/**/*.{m,mm}',
+    'MLeaksFinder/FBRetainCycleDetector/Layout/Classes/FBClassStrongLayout.mm',
+    'MLeaksFinder/FBRetainCycleDetector/Layout/Classes/Parser/*.mm',
+    'MLeaksFinder/FBRetainCycleDetector/Layout/Classes/Reference/*.m',
+    'MLeaksFinder/FBRetainCycleDetector/FBRetainCycleUtils.m'
+  ]
   
   # s.resource_bundles = {
   #   'MLeaksFinder' => ['MLeaksFinder/Assets/*.png']
   # }
 
   s.public_header_files = 'MLeaksFinder/MLeaksFinder.h', 'MLeaksFinder/NSObject+MemoryLeak.h'
-  # s.frameworks = 'UIKit', 'MapKit'
-  # s.dependency 'FBRetainCycleDetector'
+  s.frameworks = 'Foundation', 'UIKit', 'CoreGraphics'
+  s.libraries = 'c++'
 end
