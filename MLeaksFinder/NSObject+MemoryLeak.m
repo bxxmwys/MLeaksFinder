@@ -24,23 +24,32 @@ static const void *const kViewStackKey = &kViewStackKey;
 static const void *const kParentPtrsKey = &kParentPtrsKey;
 const void *const kLatestSenderKey = &kLatestSenderKey;
 
+// 一次检测延迟（秒）：UIKit/UINavigationController 触发 willDealloc 后的初次复查窗口。
+static const NSTimeInterval kMLFFirstCheckDelay = 2.0;
+// 二次检测延迟（秒）：用于过滤“延迟释放”类的误报（键盘消失动画、cell prefetch、网络回调、
+// CADisplayLink、UIKit 内部 retainAutoreleased 等）。在 2026 年的 iOS 上，
+// 仅 2s 阈值会产生大量"Memory Leak → Object Deallocated"配对噪音；二次检测命中率高且代价小。
+// 阈值取舍：与首次窗口合计 5s（2 + 3），覆盖键盘/动画/cell prefetch 类延迟；
+// 真泄漏永远不释放，仍会被报出，仅推迟告警时机而不影响识别能力。
+static const NSTimeInterval kMLFSecondCheckDelay = 3.0;
+
 @implementation NSObject (MemoryLeak)
 
 - (BOOL)willDealloc {
     NSString *className = NSStringFromClass([self class]);
     if ([[NSObject classNamesWhitelist] containsObject:className])
         return NO;
-    
+
     NSNumber *senderPtr = objc_getAssociatedObject([UIApplication sharedApplication], kLatestSenderKey);
     if ([senderPtr isEqualToNumber:@((uintptr_t)self)])
         return NO;
-    
+
     __weak id weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMLFFirstCheckDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong id strongSelf = weakSelf;
         [strongSelf assertNotDealloc];
     });
-    
+
     return YES;
 }
 
@@ -48,10 +57,24 @@ const void *const kLatestSenderKey = &kLatestSenderKey;
     if ([MLeakedObjectProxy isAnyObjectLeakedAtPtrs:[self parentPtrs]]) {
         return;
     }
-    [MLeakedObjectProxy addLeakedObject:self];
-    
-    NSString *className = NSStringFromClass([self class]);
-    NSLog(@"Possibly Memory Leak.\nIn case that %@ should not be dealloced, override -willDealloc in %@ by returning NO.\nView-ViewController stack: %@", className, className, [self viewStack]);
+
+    // 二次确认：首次检测命中后再延迟一段时间复查，自然释放则静默丢弃，避免“延迟释放”误报。
+    // 仅真正在二次窗口结束时仍存活的对象才进入告警链路。
+    __weak id weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMLFSecondCheckDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong id strongSelf = weakSelf;
+        if (!strongSelf) {
+            return; // 已自然释放，确认非泄漏
+        }
+        // 二次窗口期间，可能由其它检测路径已加入泄漏集合（同一 view 树触发多次），需再次去重。
+        if ([MLeakedObjectProxy isAnyObjectLeakedAtPtrs:[strongSelf parentPtrs]]) {
+            return;
+        }
+        [MLeakedObjectProxy addLeakedObject:strongSelf];
+
+        NSString *className = NSStringFromClass([strongSelf class]);
+        NSLog(@"Possibly Memory Leak.\nIn case that %@ should not be dealloced, override -willDealloc in %@ by returning NO.\nView-ViewController stack: %@", className, className, [strongSelf viewStack]);
+    });
 }
 
 - (void)willReleaseObject:(id)object relationship:(NSString *)relationship {
