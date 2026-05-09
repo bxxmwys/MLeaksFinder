@@ -14,6 +14,9 @@
 
 #define MLCheck(TARGET) [self willReleaseObject:(TARGET) relationship:@#TARGET];
 
+/// Debug 工具运行时开关。关闭时 MLeaksFinder 跳过自动检测、延迟复查和弹窗链路。
+FOUNDATION_EXPORT BOOL MLeaksFinderIsDisabled(void);
+
 @interface NSObject (MemoryLeak)
 
 - (BOOL)willDealloc;

@@ -11,6 +11,7 @@
  */
 
 #import "MLeaksMessenger.h"
+#import "NSObject+MemoryLeak.h"
 #import <UIKit/UIKit.h>
 
 static NSMutableArray *pendingAlertContexts;
@@ -80,6 +81,12 @@ static BOOL isPresentingAlert;
 }
 
 + (void)showNextAlertIfNeeded {
+    if (MLeaksFinderIsDisabled()) {
+        [pendingAlertContexts removeAllObjects];
+        isPresentingAlert = NO;
+        return;
+    }
+    
     if (isPresentingAlert || !pendingAlertContexts.count) {
         return;
     }
@@ -129,6 +136,9 @@ static BOOL isPresentingAlert;
  additionalButtonTitle:(NSString *)additionalButtonTitle
          actionHandler:(MLeaksMessengerActionHandler)actionHandler {
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (MLeaksFinderIsDisabled()) {
+            return;
+        }
         if (!pendingAlertContexts) {
             pendingAlertContexts = [NSMutableArray array];
         }

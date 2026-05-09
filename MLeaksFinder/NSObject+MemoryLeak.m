@@ -24,6 +24,8 @@ static const void *const kViewStackKey = &kViewStackKey;
 static const void *const kParentPtrsKey = &kParentPtrsKey;
 const void *const kLatestSenderKey = &kLatestSenderKey;
 
+static NSString * const kMLeaksFinderDisabledKey = @"MLeaksFinderDisabledKey";
+
 // 一次检测延迟（秒）：UIKit/UINavigationController 触发 willDealloc 后的初次复查窗口。
 static const NSTimeInterval kMLFFirstCheckDelay = 2.0;
 // 二次检测延迟（秒）：用于过滤“延迟释放”类的误报（键盘消失动画、cell prefetch、网络回调、
@@ -33,9 +35,17 @@ static const NSTimeInterval kMLFFirstCheckDelay = 2.0;
 // 真泄漏永远不释放，仍会被报出，仅推迟告警时机而不影响识别能力。
 static const NSTimeInterval kMLFSecondCheckDelay = 3.0;
 
+BOOL MLeaksFinderIsDisabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kMLeaksFinderDisabledKey];
+}
+
 @implementation NSObject (MemoryLeak)
 
 - (BOOL)willDealloc {
+    if (MLeaksFinderIsDisabled()) {
+        return NO;
+    }
+    
     NSString *className = NSStringFromClass([self class]);
     if ([[NSObject classNamesWhitelist] containsObject:className])
         return NO;
@@ -46,6 +56,9 @@ static const NSTimeInterval kMLFSecondCheckDelay = 3.0;
 
     __weak id weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMLFFirstCheckDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (MLeaksFinderIsDisabled()) {
+            return;
+        }
         __strong id strongSelf = weakSelf;
         [strongSelf assertNotDealloc];
     });
@@ -54,6 +67,10 @@ static const NSTimeInterval kMLFSecondCheckDelay = 3.0;
 }
 
 - (void)assertNotDealloc {
+    if (MLeaksFinderIsDisabled()) {
+        return;
+    }
+    
     if ([MLeakedObjectProxy isAnyObjectLeakedAtPtrs:[self parentPtrs]]) {
         return;
     }
@@ -62,6 +79,9 @@ static const NSTimeInterval kMLFSecondCheckDelay = 3.0;
     // 仅真正在二次窗口结束时仍存活的对象才进入告警链路。
     __weak id weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kMLFSecondCheckDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (MLeaksFinderIsDisabled()) {
+            return;
+        }
         __strong id strongSelf = weakSelf;
         if (!strongSelf) {
             return; // 已自然释放，确认非泄漏

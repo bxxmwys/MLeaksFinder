@@ -33,7 +33,7 @@ static const void *const kPoppedDetailVCKey = &kPoppedDetailVCKey;
 - (void)swizzled_pushViewController:(UIViewController *)viewController animated:(BOOL)animated {
     if (self.splitViewController) {
         id detailViewController = objc_getAssociatedObject(self, kPoppedDetailVCKey);
-        if ([detailViewController isKindOfClass:[UIViewController class]]) {
+        if (!MLeaksFinderIsDisabled() && [detailViewController isKindOfClass:[UIViewController class]]) {
             [detailViewController willDealloc];
             objc_setAssociatedObject(self, kPoppedDetailVCKey, nil, OBJC_ASSOCIATION_RETAIN);
         }
@@ -58,6 +58,9 @@ static const void *const kPoppedDetailVCKey = &kPoppedDetailVCKey;
     }
     
     // VC is not dealloced until disappear when popped using a left-edge swipe gesture
+    if (MLeaksFinderIsDisabled()) {
+        return poppedViewController;
+    }
     extern const void *const kHasBeenPoppedKey;
     objc_setAssociatedObject(poppedViewController, kHasBeenPoppedKey, @(YES), OBJC_ASSOCIATION_RETAIN);
     
@@ -67,8 +70,10 @@ static const void *const kPoppedDetailVCKey = &kPoppedDetailVCKey;
 - (NSArray<UIViewController *> *)swizzled_popToViewController:(UIViewController *)viewController animated:(BOOL)animated {
     NSArray<UIViewController *> *poppedViewControllers = [self swizzled_popToViewController:viewController animated:animated];
     
-    for (UIViewController *viewController in poppedViewControllers) {
-        [viewController willDealloc];
+    if (!MLeaksFinderIsDisabled()) {
+        for (UIViewController *viewController in poppedViewControllers) {
+            [viewController willDealloc];
+        }
     }
     
     return poppedViewControllers;
@@ -77,8 +82,10 @@ static const void *const kPoppedDetailVCKey = &kPoppedDetailVCKey;
 - (NSArray<UIViewController *> *)swizzled_popToRootViewControllerAnimated:(BOOL)animated {
     NSArray<UIViewController *> *poppedViewControllers = [self swizzled_popToRootViewControllerAnimated:animated];
     
-    for (UIViewController *viewController in poppedViewControllers) {
-        [viewController willDealloc];
+    if (!MLeaksFinderIsDisabled()) {
+        for (UIViewController *viewController in poppedViewControllers) {
+            [viewController willDealloc];
+        }
     }
     
     return poppedViewControllers;

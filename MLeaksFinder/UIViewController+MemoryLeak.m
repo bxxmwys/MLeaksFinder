@@ -32,7 +32,7 @@ const void *const kHasBeenPoppedKey = &kHasBeenPoppedKey;
 - (void)swizzled_viewDidDisappear:(BOOL)animated {
     [self swizzled_viewDidDisappear:animated];
     
-    if ([objc_getAssociatedObject(self, kHasBeenPoppedKey) boolValue]) {
+    if (!MLeaksFinderIsDisabled() && [objc_getAssociatedObject(self, kHasBeenPoppedKey) boolValue]) {
         [self willDealloc];
     }
 }
@@ -53,7 +53,9 @@ const void *const kHasBeenPoppedKey = &kHasBeenPoppedKey;
     
     if (!dismissedViewController) return;
     
-    [dismissedViewController willDealloc];
+    if (!MLeaksFinderIsDisabled()) {
+        [dismissedViewController willDealloc];
+    }
 }
 
 - (BOOL)willDealloc {
