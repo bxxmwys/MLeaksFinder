@@ -25,6 +25,7 @@
 
 #import <dlfcn.h>
 #import <stdlib.h>
+#import <stdint.h>
 #import <string.h>
 #import <sys/types.h>
 #import <mach/mach.h>
@@ -60,50 +61,101 @@ struct rcd_rebindings_entry {
 
 static struct rcd_rebindings_entry *_rebindings_head;
 
-static vm_prot_t rcd_get_protection(void *address) {
+struct rcd_vm_protection {
+  vm_address_t address;
+  vm_size_t size;
+  vm_prot_t protection;
+  int should_restore;
+};
+
+static kern_return_t rcd_get_vm_region_info(vm_address_t *region_address,
+                                            vm_size_t *region_size,
+                                            vm_prot_t *protection) {
   mach_port_t task = mach_task_self();
-  vm_size_t size = 0;
-  vm_address_t region_address = (vm_address_t)address;
   memory_object_name_t object;
 #if __LP64__
   mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
   vm_region_basic_info_data_64_t info;
-  kern_return_t info_ret = vm_region_64(task,
-                                        &region_address,
-                                        &size,
-                                        VM_REGION_BASIC_INFO_64,
-                                        (vm_region_info_64_t)&info,
-                                        &count,
-                                        &object);
+  kern_return_t ret = vm_region_64(task,
+                                   region_address,
+                                   region_size,
+                                   VM_REGION_BASIC_INFO_64,
+                                   (vm_region_info_64_t)&info,
+                                   &count,
+                                   &object);
 #else
   mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT;
   vm_region_basic_info_data_t info;
-  kern_return_t info_ret = vm_region(task,
-                                     &region_address,
-                                     &size,
-                                     VM_REGION_BASIC_INFO,
-                                     (vm_region_info_t)&info,
-                                     &count,
-                                     &object);
+  kern_return_t ret = vm_region(task,
+                                region_address,
+                                region_size,
+                                VM_REGION_BASIC_INFO,
+                                (vm_region_info_t)&info,
+                                &count,
+                                &object);
 #endif
-  if (info_ret == KERN_SUCCESS) {
-    return info.protection;
+  if (ret == KERN_SUCCESS) {
+    *protection = info.protection;
   }
-  return VM_PROT_READ;
+  return ret;
 }
 
-static int rcd_make_section_writable(void **indirect_symbol_bindings, size_t size) {
-  vm_prot_t protection = rcd_get_protection(indirect_symbol_bindings);
+static int rcd_make_section_writable(void **indirect_symbol_bindings,
+                                     size_t size,
+                                     struct rcd_vm_protection *restore_info) {
+  vm_address_t region_address = (vm_address_t)indirect_symbol_bindings;
+  vm_size_t region_size = 0;
+  vm_prot_t protection = VM_PROT_READ;
+  kern_return_t ret = rcd_get_vm_region_info(&region_address,
+                                             &region_size,
+                                             &protection);
+  if (ret != KERN_SUCCESS) {
+    return 0;
+  }
+
+  uintptr_t section_start = (uintptr_t)indirect_symbol_bindings;
+  uintptr_t region_start = (uintptr_t)region_address;
+  if (section_start < region_start ||
+      region_size > UINTPTR_MAX - region_start ||
+      size > UINTPTR_MAX - section_start) {
+    return 0;
+  }
+  uintptr_t region_end = region_start + region_size;
+  if (section_start + size > region_end) {
+    return 0;
+  }
+
+  restore_info->address = region_address;
+  restore_info->size = region_size;
+  restore_info->protection = protection;
+  restore_info->should_restore = 0;
+
   if (protection & VM_PROT_WRITE) {
     return 1;
   }
-  // iOS 新系统会把 __DATA_CONST 等 section 设为只读，写入前只在 section 不可写时放开一次写权限。
-  kern_return_t err = vm_protect(mach_task_self(),
-                                 (uintptr_t)indirect_symbol_bindings,
-                                 size,
-                                 0,
-                                 protection | VM_PROT_WRITE | VM_PROT_COPY);
-  return err == KERN_SUCCESS;
+
+  // iOS 15+ 可能把 __DATA_CONST 的符号指针页设为只读；fishhook 写入前必须按 VM region 临时放开写权限。
+  ret = vm_protect(mach_task_self(),
+                   region_address,
+                   region_size,
+                   0,
+                   protection | VM_PROT_WRITE | VM_PROT_COPY);
+  if (ret != KERN_SUCCESS) {
+    return 0;
+  }
+  restore_info->should_restore = 1;
+  return 1;
+}
+
+static void rcd_restore_section_protection(struct rcd_vm_protection *restore_info) {
+  if (!restore_info->should_restore) {
+    return;
+  }
+  vm_protect(mach_task_self(),
+             restore_info->address,
+             restore_info->size,
+             0,
+             restore_info->protection);
 }
 
 static int rcd_prepend_rebindings(struct rcd_rebindings_entry **rebindings_head,
@@ -133,7 +185,8 @@ static void rcd_perform_rebinding_with_section(struct rcd_rebindings_entry *rebi
                                                uint32_t *indirect_symtab) {
   uint32_t *indirect_symbol_indices = indirect_symtab + section->reserved1;
   void **indirect_symbol_bindings = (void **)((uintptr_t)slide + section->addr);
-  if (!rcd_make_section_writable(indirect_symbol_bindings, section->size)) {
+  struct rcd_vm_protection restore_info;
+  if (!rcd_make_section_writable(indirect_symbol_bindings, section->size, &restore_info)) {
     return;
   }
   for (uint i = 0; i < section->size / sizeof(void *); i++) {
@@ -161,6 +214,7 @@ static void rcd_perform_rebinding_with_section(struct rcd_rebindings_entry *rebi
     }
   symbol_loop:;
   }
+  rcd_restore_section_protection(&restore_info);
 }
 
 static void rebind_symbols_for_image(struct rcd_rebindings_entry *rebindings,
